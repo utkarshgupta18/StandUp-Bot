@@ -1,12 +1,19 @@
-# RAG Project Tracker
+# StandUp Bot
 
-A multi-project chatbot that answers "what's the latest update / what's
-pending" by retrieving from your project docs and git commit history and
-having Claude generate a sourced answer. Phase 0 + Phase 1 of the plan:
-foundations plus single-project ingestion and Q&A (multi-project support
-already works — the data model was built for it from the start — Phase 2
-adds the polish: a project switcher, cross-project questions, and
-scheduled re-ingestion).
+A RAG-powered chatbot that gives you your own project standup, on demand.
+Ask it what's been done, what's still pending, or what the latest update
+is on a project, and it answers by retrieving from that project's docs and
+git commit history — with sources cited back to the exact doc or commit.
+
+Built as a multi-project tracker from the start: point it at more than one
+project and it can answer questions scoped to one of them, or across all
+of them at once.
+
+**Status:** Phase 0 (foundations) and Phase 1 (single-project ingestion +
+Q&A) are done. Multi-project support already works under the hood — every
+chunk is tagged by project — Phase 2 adds the UI polish (project switcher,
+cross-project questions) and scheduled re-ingestion on top of it. See
+[`docs/project-plan.md`](docs/project-plan.md) for the full phased roadmap.
 
 ## What's included
 
@@ -21,7 +28,8 @@ scheduled re-ingestion).
 ## Setup
 
 ```bash
-cd rag_tracker
+git clone https://github.com/utkarshgupta18/StandUp-Bot.git
+cd StandUp-Bot
 python3 -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -95,5 +103,6 @@ buttons, and chat.
 
 ## What's next (Phase 2+)
 
-See `project-plan.md` in the project — cross-project UI polish, scheduled
-re-ingestion, then Phase 3's structured status generation and dashboard.
+See [`docs/project-plan.md`](docs/project-plan.md) for the full roadmap —
+cross-project UI polish, scheduled re-ingestion, then Phase 3's structured
+status generation and dashboard.
