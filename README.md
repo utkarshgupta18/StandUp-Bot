@@ -15,6 +15,38 @@ chunk is tagged by project — Phase 2 adds the UI polish (project switcher,
 cross-project questions) and scheduled re-ingestion on top of it. See
 [`docs/project-plan.md`](docs/project-plan.md) for the full phased roadmap.
 
+## Business use case
+
+Status reporting is a recurring tax on anyone who owns more than one
+project: "what did we ship this sprint," "what's still open," "where did
+we leave off" — questions that currently get answered by manually
+re-reading commit logs, digging through docs, or writing a status update
+by hand before a standup or a client check-in. StandUp Bot answers those
+questions on demand, straight from the ground truth (your actual docs and
+commit history) instead of a summary someone has to remember to write.
+
+Who this is for:
+
+- **Solo developers and freelancers** juggling several client or side
+  projects, who need to reconstruct "where did I leave off" in seconds
+  instead of scrolling through old commits.
+- **Freelancers and agencies** who bill by project and need a quick, honest
+  answer to "what have you actually done" before a client update — with
+  sources attached, so the answer is verifiable, not just asserted.
+- **Small teams** that want to cut down on manual standup prep — instead of
+  everyone writing "yesterday/today/blockers" by hand, the bot derives it
+  from what was actually committed and documented.
+- **Engineering managers and PMs** overseeing multiple repos or workstreams,
+  who need a single place to ask "what's the status across everything"
+  rather than pinging five people or opening five dashboards.
+
+Because retrieval is grounded in real docs and commits rather than a
+model's memory, answers come with citations back to the exact source —
+useful anywhere status has to be reported honestly, not just plausibly.
+The long-term aim (see the roadmap) is a general-purpose tracker that can
+sit across every project someone owns and answer "what's going on" for
+any of them from one interface.
+
 ## What's included
 
 - `app/` — FastAPI backend (project registry, ingest endpoints, query endpoint)
