@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from datetime import datetime
 
 import chromadb
 from chromadb.utils import embedding_functions
@@ -107,3 +108,51 @@ def query(
         n_results=top_k,
         where=where,
     )
+
+
+def delete_project_chunks(project_id: int) -> None:
+    """Drop every chunk belonging to one project (used when a project is deleted)."""
+    get_collection().delete(where={"project_id": project_id})
+
+
+def get_chunks(project_id: int, source_type: str | None = None) -> dict:
+    """Fetch all stored chunks for a project (no similarity ranking).
+
+    Used by the status generator, which wants recent commits by date rather
+    than by relevance to a question.
+    """
+    where: dict = {"project_id": project_id}
+    if source_type is not None:
+        where = {"$and": [{"project_id": project_id}, {"source_type": source_type}]}
+    return get_collection().get(where=where, include=["documents", "metadatas"])
+
+
+def query_across_projects(question: str, project_ids: list[int], top_k: int = 6) -> dict:
+    """Cross-project retrieval that gives every project a fair share of results.
+
+    A single unscoped query lets one project with lots of similar chunks crowd
+    the others out, which breaks questions like "which projects have pending
+    work?". Instead, query each project separately and merge, keeping the
+    standard Chroma result shape so callers don't need to care.
+    """
+    merged = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+    if not project_ids:
+        return merged
+    per_project = max(2, -(-top_k // len(project_ids)))  # ceil(top_k / n), at least 2
+    for pid in project_ids:
+        res = query(question, top_k=per_project, project_id=pid)
+        for key in merged:
+            merged[key][0].extend((res.get(key) or [[]])[0] or [])
+    return merged
+
+
+def latest_commit_date(project_id: int) -> str | None:
+    """ISO date of the newest ingested commit for a project, if any."""
+    res = get_collection().get(
+        where={"$and": [{"project_id": project_id}, {"source_type": "commit"}]},
+        include=["metadatas"],
+    )
+    dates = [m.get("commit_date") for m in res.get("metadatas") or [] if m.get("commit_date")]
+    if not dates:
+        return None
+    return max(dates, key=lambda d: datetime.fromisoformat(d).timestamp())

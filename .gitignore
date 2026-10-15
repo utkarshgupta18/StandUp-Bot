@@ -5,3 +5,5 @@ __pycache__/
 .env
 sample_data/sample_repo/.git/
 *.db
+sample_data/second_project/repo/.git/
+.pytest_cache/

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 
-from git import Repo
+from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 from db import database as db
 from ingestion.chunker import chunk_text
@@ -40,7 +40,12 @@ def ingest_git(project_id: int, repo_path: str, max_commits: int = 500) -> dict:
     same hash never needs re-embedding -- this makes re-ingestion cheap:
     only genuinely new commits since the last run get processed.
     """
-    repo = Repo(repo_path)
+    try:
+        repo = Repo(repo_path)
+    except NoSuchPathError:
+        raise FileNotFoundError(f"repo_path does not exist: {repo_path}")
+    except InvalidGitRepositoryError:
+        raise ValueError(f"{repo_path} is not a git repository")
     if repo.bare:
         raise ValueError(f"{repo_path} is a bare repo with no working history")
 
@@ -80,6 +85,7 @@ def ingest_git(project_id: int, repo_path: str, max_commits: int = 500) -> dict:
                 "source_ref": sha,
                 "chunk_index": i,
                 "commit_date": commit.committed_datetime.isoformat(),
+                "commit_ts": int(commit.committed_date),
             }
             for i in range(len(chunks))
         ]

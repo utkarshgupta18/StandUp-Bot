@@ -18,15 +18,28 @@ def _hash(text: str) -> str:
 def ingest_docs(project_id: int, docs_path: str) -> dict:
     """Walk docs_path, chunk+embed any changed files, skip unchanged ones.
 
-    Returns a small report dict: {"ingested": [...], "skipped": [...], "errors": [...]}
+    Files that were ingested before but no longer exist under docs_path are
+    removed from the index, so answers don't cite deleted docs.
+
+    Returns a small report dict:
+    {"ingested": [...], "skipped": [...], "removed": [...], "errors": [...]}
     """
     root = Path(docs_path).expanduser().resolve()
     if not root.exists():
         raise FileNotFoundError(f"docs_path does not exist: {root}")
 
-    report = {"ingested": [], "skipped": [], "errors": []}
+    report = {"ingested": [], "skipped": [], "removed": [], "errors": []}
 
-    files = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in DOC_EXTENSIONS]
+    files = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in DOC_EXTENSIONS)
+    seen = {str(p.relative_to(root)) for p in files}
+
+    for existing in db.list_documents(project_id, "doc"):
+        if existing["source_ref"] not in seen:
+            if existing["chunk_ids"]:
+                delete_chunks(existing["chunk_ids"].split(","))
+            db.delete_document(project_id, "doc", existing["source_ref"])
+            report["removed"].append(existing["source_ref"])
+
     for path in files:
         rel_path = str(path.relative_to(root))
         try:
