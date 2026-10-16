@@ -69,6 +69,10 @@ AUTH_SECRET = os.getenv("AUTH_SECRET", "")
 AUTH_TOKEN_TTL_HOURS = _int_env("AUTH_TOKEN_TTL_HOURS", 24 * 7)
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+# Failed-login limits within a sliding window (0 disables a limit). See app/ratelimit.py.
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = _int_env("LOGIN_RATE_LIMIT_WINDOW_SECONDS", 15 * 60)
+LOGIN_MAX_FAILURES_PER_IP = _int_env("LOGIN_MAX_FAILURES_PER_IP", 20)
+LOGIN_MAX_FAILURES_PER_USER = _int_env("LOGIN_MAX_FAILURES_PER_USER", 10)
 
 # Browser origins allowed to call the API directly (comma-separated). Not
 # needed when the React app is served by the API itself or via the dev proxy.

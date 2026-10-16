@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 import pytest  # noqa: E402
 from git import Actor, Repo  # noqa: E402
 
+from app.ratelimit import login_limiter  # noqa: E402
 from db import database as db  # noqa: E402
 from rag import llm  # noqa: E402
 from rag.vector_store import delete_project_chunks  # noqa: E402
@@ -91,6 +92,7 @@ def clean_state():
         db.delete_project(project["id"])
     for user in db.list_users():
         db.delete_user(user["id"])
+    login_limiter.reset()
     yield
 
 

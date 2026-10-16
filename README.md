@@ -165,6 +165,26 @@ Tokens are HMAC-signed and expire after `AUTH_TOKEN_TTL_HOURS` (7 days by
 default). Each request re-reads the user, so deleting a user or changing
 their access takes effect immediately.
 
+**Login rate limiting.** Failed sign-ins are capped per client IP (20) and
+per username (10) within a 15-minute sliding window. Past either cap,
+`/auth/login` returns `429` with a `Retry-After` header, even for the right
+password, and doesn't check the password at all until older failures leave the
+window. Successful sign-ins aren't counted, and one clears that username's
+failures. Tune or disable the caps with `LOGIN_RATE_LIMIT_WINDOW_SECONDS`,
+`LOGIN_MAX_FAILURES_PER_IP` and `LOGIN_MAX_FAILURES_PER_USER` (`0` turns a cap
+off). Things to know:
+
+- Counters are kept in memory per API process. They reset on restart, and
+  several workers or replicas each count separately.
+- The per-username cap means someone who knows a username can keep that
+  account locked out by failing on purpose. If that matters more to you than
+  password guessing, set `LOGIN_MAX_FAILURES_PER_USER=0` and rely on the
+  per-IP cap.
+- Behind a reverse proxy, every request appears to come from the proxy, so all
+  users would share one per-IP counter. Tell uvicorn to trust the proxy's
+  `X-Forwarded-For`: `uvicorn app.main:app --proxy-headers --forwarded-allow-ips=<proxy ip>`
+  (or set `FORWARDED_ALLOW_IPS` in the container's environment).
+
 ## Connectors
 
 Connect a project to Slack, Linear, Jira or Notion under **Projects &

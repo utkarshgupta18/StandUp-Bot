@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anthropic
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app import auth
 from app import config as cfg
+from app.ratelimit import login_limiter
 from app.scheduler import ReingestScheduler
 from connectors import ConnectorError, describe_connectors, get_connector
 from db import database as db
@@ -161,12 +162,23 @@ def auth_config():
 
 
 @app.post("/auth/login")
-def login(req: LoginRequest):
+def login(req: LoginRequest, request: Request):
     if not cfg.AUTH_ENABLED:
         raise HTTPException(400, "Authentication is disabled (AUTH_ENABLED=false)")
+    ip = request.client.host if request.client else "unknown"
+    wait = login_limiter.retry_after(ip, req.username)
+    if wait:
+        minutes = max(1, -(-wait // 60))
+        raise HTTPException(
+            429,
+            f"Too many failed sign-in attempts. Try again in {minutes} minute{'s' if minutes != 1 else ''}.",
+            headers={"Retry-After": str(wait)},
+        )
     user = auth.authenticate(req.username, req.password)
     if not user:
+        login_limiter.record_failure(ip, req.username)
         raise HTTPException(401, "Wrong username or password")
+    login_limiter.record_success(ip, req.username)
     return {"token": auth.create_token(user["id"]), "user": auth.public_user(user)}
 
 
