@@ -9,12 +9,12 @@ Built as a multi-project tracker from the start: point it at more than one
 project and it can answer questions scoped to one of them, or across all
 of them at once.
 
-**Status:** Phases 0–3 are done: single- and multi-project ingestion and
-Q&A, cross-project questions ("which projects have pending work?"),
-on-demand and scheduled re-ingestion, and Claude-generated structured
-status (done / in progress / next steps / blockers) shown on a dashboard
-and used by the chatbot. Phase 4 (React UI, Postgres, auth, more
-connectors) is optional, as-needed polish. See
+**Status:** all planned phases (0–4) are done: single- and multi-project
+ingestion and Q&A, cross-project questions ("which projects have pending
+work?"), on-demand and scheduled re-ingestion, Claude-generated structured
+status (done / in progress / next steps / blockers), a React web app,
+optional Postgres + pgvector storage, optional login with per-project
+access, and Slack / Linear / Jira / Notion connectors. See
 [`docs/project-plan.md`](docs/project-plan.md) for the full roadmap.
 
 ## Business use case
@@ -51,14 +51,20 @@ any of them from one interface.
 
 ## What's included
 
-- `app/` — FastAPI backend (project registry, ingestion, refresh, status,
-  dashboard and query endpoints) and the background re-ingestion scheduler
-- `db/` — SQLite schema + helpers (projects, documents, ingestion runs, status updates)
+- `app/` — FastAPI backend (projects, ingestion, connectors, status,
+  dashboard, query, users), the background re-ingestion scheduler, auth
+  (`auth.py`) and the user-management CLI (`manage.py`)
+- `web/` — React + TypeScript web app (Vite), served by the API at `/app/`
+- `db/` — schema + helpers for SQLite or Postgres (projects, documents,
+  sources, ingestion runs, status updates, users)
 - `ingestion/` — doc ingestor (markdown/text folders), git ingestor (commit
-  history), and the runner that refreshes a whole project in one step
-- `rag/` — Chroma vector store wrapper, the retrieve-then-generate pipeline,
-  the structured status generator, and the single Claude client wrapper (`llm.py`)
-- `ui/` — Streamlit app: chat (per project or across all) and a status dashboard
+  history), connector-source ingestor, and the runner that refreshes a
+  whole project in one step
+- `connectors/` — Slack, Linear, Jira and Notion connectors
+- `rag/` — vector store (Chroma or pgvector), the retrieve-then-generate
+  pipeline, the structured status generator, and the Claude client wrapper (`llm.py`)
+- `ui/` — the original Streamlit app, kept as a lightweight alternative UI
+- `Dockerfile`, `docker-compose.yml` — one image for API + web app, plus Postgres with pgvector
 - `sample_data/` — two tiny demo projects (docs + a git repo each)
 - `tests/` — pytest suite (offline: hashing embedder, Claude stubbed out)
 - `smoke_test.py` — end-to-end pipeline check (ingestion + retrieval, no API key needed)
@@ -82,32 +88,114 @@ and everything runs offline except the actual Claude API calls.
 
 ## Run it
 
-Terminal 1 — API:
+Build the web app once (needs Node 18+), then start the API, which serves
+it:
 ```bash
+cd web && npm ci && npm run build && cd ..
 uvicorn app.main:app --reload
 ```
 
-Terminal 2 — UI:
-```bash
-streamlit run ui/streamlit_app.py
-```
+Open http://localhost:8000/ (it redirects to `/app/`). Under **Projects &
+sources**, add a project (name + a docs folder path + a git repo path;
+"Ingest right away" is on by default) and optionally connect Slack,
+Linear, Jira or Notion sources. Then ask questions in **Chat**. Pick
+"All projects" in the top bar to ask across every project at once. The
+**Dashboard** shows each project's counts, last commit, last refresh,
+and its structured status.
 
-Open the Streamlit URL it prints, add a project (name + a docs folder path
-+ a git repo path; "Ingest right away" is on by default), then ask questions
-in the chat box. Pick "(all projects)" in the sidebar to ask across every
-project at once. The **Dashboard** tab shows each project's doc/commit
-counts, last commit, last refresh, and its structured status.
+While working on the frontend, `cd web && npm run dev` serves it with hot
+reload at http://localhost:5173/app/ and proxies API calls to port 8000.
+
+The Streamlit UI still works too: `streamlit run ui/streamlit_app.py`
+(set `STANDUP_API_TOKEN` in `.env` if auth is on).
 
 To keep answers current without clicking anything, set
 `REINGEST_INTERVAL_MINUTES` (e.g. `30`) in `.env`: the API then re-scans
 every project's docs and pulls new commits on that interval, and
 regenerates the structured status of any project that changed.
 
+## Run with Docker (Postgres + pgvector)
+
+```bash
+cp .env.example .env     # set ANTHROPIC_API_KEY, and auth/connector settings if wanted
+./sample_data/init_sample_repo.sh
+docker compose up --build
+```
+
+This runs Postgres with pgvector and the API (with the web app) at
+http://localhost:8000/. Docs folders and repos have to be visible inside
+the container: they're mounted read-only from `PROJECTS_DIR` (default
+`./sample_data`) at `/projects`, so the demo projects use paths like
+`/projects/docs` and `/projects/sample_repo`.
+
+## Storage backends
+
+| Setting | Metadata | Embeddings |
+| --- | --- | --- |
+| default | SQLite file in `DATA_DIR` | Chroma in `DATA_DIR` |
+| `DATABASE_URL=postgresql://...` | Postgres | Chroma |
+| plus `VECTOR_BACKEND=pgvector` | Postgres | pgvector table in the same database |
+
+Tables are created on startup. Existing SQLite databases from earlier
+versions are migrated in place. Switching backends doesn't copy data:
+point the new backend at your projects and refresh them to re-ingest.
+
+## Auth and access control
+
+Auth is off by default, which suits one person on their own machine.
+To share an instance, set `AUTH_ENABLED=true` and a long random
+`AUTH_SECRET`, then create the first admin with
+`ADMIN_USERNAME`/`ADMIN_PASSWORD` in `.env` or with the CLI:
+
+```bash
+python -m app.manage create-user alice --role admin   # prompts for a password
+python -m app.manage create-user bob                   # viewer
+python -m app.manage grant bob invoice-service         # projects bob can see
+python -m app.manage create-token alice --days 365     # token for scripts / Streamlit
+```
+
+- **Admins** can do everything: manage projects, sources and users, run
+  refreshes, and generate status.
+- **Viewers** can read the dashboard and status and use chat, but only for
+  the projects they've been granted. Projects they can't see return 404,
+  and "all projects" questions only search their projects.
+- Admins also manage users in the web app under **Users**.
+
+Tokens are HMAC-signed and expire after `AUTH_TOKEN_TTL_HOURS` (7 days by
+default). Each request re-reads the user, so deleting a user or changing
+their access takes effect immediately.
+
+## Connectors
+
+Connect a project to Slack, Linear, Jira or Notion under **Projects &
+sources** (or `POST /projects/{id}/sources`). Credentials go in `.env`;
+per-source settings (which channel, team, JQL or pages) are stored with
+the project.
+
+| Kind | Credentials | Source settings | What's ingested |
+| --- | --- | --- | --- |
+| Slack | `SLACK_BOT_TOKEN` (scopes `channels:history`, `channels:read`, `users:read`; invite the bot to the channel) | `channel` (ID), `days` (14) | one document per channel-day, with thread replies |
+| Linear | `LINEAR_API_KEY` | `team_key`, optional `project`, `days` (90), `max_issues` | one document per issue: state, assignee, priority, labels, description |
+| Jira Cloud | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | `project_key` or `jql`, `days` (90), `max_issues` | one document per issue, rich-text description flattened |
+| Notion | `NOTION_TOKEN` (share pages/databases with the integration) | `page_ids` and/or `database_ids` (ids or URLs) | one document per page, with properties and block text |
+
+Sources sync with every refresh, manual or scheduled. Unchanged items are
+skipped, and items that leave a source's window are kept as history.
+Their content feeds the structured status (as "issues, messages and
+pages, newest first") and chat answers, with links back to the issue or
+page. A source whose credentials are missing or wrong reports an error on
+the dashboard, and the rest of the refresh still runs.
+
 ## Run the tests
 
 ```bash
 pytest                                            # full suite, offline, no API key
 EMBEDDING_BACKEND=hashing python smoke_test.py    # ingestion + retrieval on the demo data
+
+# the same suite against Postgres + pgvector (needs a database with the vector extension available)
+STANDUP_TEST_DATABASE_URL=postgresql://postgres@localhost:5432/standup_test pytest
+
+cd web && npm run typecheck                       # frontend type-check
 ```
 
 ## Try it with the included demo project
@@ -148,18 +236,23 @@ Or just open the Streamlit UI, create the same projects, and chat.
 
 | Method & path | What it does |
 | --- | --- |
-| `POST /projects`, `GET /projects`, `GET/DELETE /projects/{id}` | Project registry (delete also removes its vectors) |
+| `POST /projects`, `GET /projects`, `GET/PATCH/DELETE /projects/{id}` | Project registry (delete also removes its vectors) |
 | `POST /ingest/docs`, `POST /ingest/git` | Ingest one source for one project |
-| `POST /projects/{id}/reingest` | Refresh one project: docs + git, then status if anything changed |
+| `POST /projects/{id}/reingest` | Refresh one project: docs, git and sources, then status if anything changed |
 | `POST /ingest/all` | Refresh every project (what the scheduler runs) |
 | `GET /projects/{id}/runs` | Ingestion run history (manual and scheduled) |
 | `POST /projects/{id}/status`, `GET /projects/{id}/status` | Generate / read the latest structured status |
 | `GET /dashboard` | Per-project counts, last commit, last refresh, latest status |
-| `POST /query` | RAG Q&A; omit `project_id` to ask across all projects |
-| `GET /scheduler`, `GET /health` | Scheduler state; API health and whether a key is configured |
+| `POST /query` | RAG Q&A; omit `project_id` to ask across all (visible) projects |
+| `GET /connectors` | Available connector kinds, their settings, and whether credentials are set |
+| `GET/POST /projects/{id}/sources`, `POST /sources/{id}/sync`, `DELETE /sources/{id}` | Connector sources for a project |
+| `GET /auth/config`, `POST /auth/login`, `GET /auth/me` | Auth (login returns a bearer token) |
+| `GET/POST /users`, `PATCH/DELETE /users/{id}` | User management (admins only) |
+| `GET /scheduler`, `GET /health` | Scheduler state; health, storage backends, and whether a key is configured |
 
 `/projects/{id}/reingest` and `/ingest/all` take an optional
-`?auto_status=false` to skip status regeneration.
+`?auto_status=false` to skip status regeneration. With auth on, send
+`Authorization: Bearer <token>`. Every write endpoint needs an admin.
 
 ## Notes on design choices
 
@@ -175,7 +268,7 @@ Or just open the Streamlit UI, create the same projects, and chat.
   content hash changed; commits are immutable so an already-ingested
   commit hash is always skipped. Re-running ingestion after new commits or
   doc edits only processes what's new.
-- **Multi-project**: every chunk in Chroma carries a `project_id`.
+- **Multi-project**: every chunk in the vector store carries a `project_id`.
   `/query` with a `project_id` scopes retrieval to one project. Omitting it
   queries each project separately and merges the results, so one project
   with lots of similar text can't crowd the others out of a cross-project
@@ -195,8 +288,10 @@ Or just open the Streamlit UI, create the same projects, and chat.
   diffs can be added as a new `source_type` later if deeper "what changed
   and why" answers are needed.
 
-## What's next (Phase 4, as needed)
+## What's next
 
-See [`docs/project-plan.md`](docs/project-plan.md): a React frontend,
-Postgres/pgvector, auth, and more source connectors (Slack, Linear/Jira,
-Notion) — only if usage calls for them.
+Every phase in [`docs/project-plan.md`](docs/project-plan.md) is done.
+Ideas for later, if usage calls for them: SSO (OIDC) instead of local
+passwords, webhooks from Slack/Linear/Jira for near-real-time updates
+instead of polling, embedding full code diffs, and a hosted vector
+database for very large deployments.

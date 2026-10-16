@@ -16,6 +16,14 @@ os.environ["DATA_DIR"] = str(_TMP / "data")
 os.environ["EMBEDDING_BACKEND"] = "hashing"
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["REINGEST_INTERVAL_MINUTES"] = "0"
+os.environ["AUTH_ENABLED"] = "false"
+# Run the whole suite against Postgres + pgvector instead of SQLite + Chroma:
+#   STANDUP_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5433/standup_test pytest
+_PG_URL = os.environ.get("STANDUP_TEST_DATABASE_URL", "")
+os.environ["DATABASE_URL"] = _PG_URL
+os.environ["VECTOR_BACKEND"] = "pgvector" if _PG_URL else "chroma"
+for _var in ("SLACK_BOT_TOKEN", "LINEAR_API_KEY", "JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "NOTION_TOKEN"):
+    os.environ[_var] = ""
 sys.path.insert(0, str(ROOT))
 
 import pytest  # noqa: E402
@@ -34,9 +42,11 @@ def _make_repo(src: Path, dest: Path, commits: list[tuple[list[str], str]]) -> P
     """Copy src's files into dest and commit them in the given groups."""
     shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
     repo = Repo.init(dest)
-    for files, message in commits:
+    # Distinct, increasing commit times so "newest first" ordering is deterministic.
+    for i, (files, message) in enumerate(commits):
+        when = f"2026-09-0{i + 1}T10:00:00"
         repo.index.add(files)
-        repo.index.commit(message, author=AUTHOR, committer=AUTHOR)
+        repo.index.commit(message, author=AUTHOR, committer=AUTHOR, author_date=when, commit_date=when)
     return dest
 
 
@@ -79,6 +89,8 @@ def clean_state():
     for project in db.list_projects():
         delete_project_chunks(project["id"])
         db.delete_project(project["id"])
+    for user in db.list_users():
+        db.delete_user(user["id"])
     yield
 
 

@@ -14,6 +14,7 @@ from app.config import STATUS_AUTO_GENERATE
 from db import database as db
 from ingestion.doc_ingestor import ingest_docs
 from ingestion.git_ingestor import ingest_git
+from ingestion.source_ingestor import ingest_source
 from rag import llm
 
 log = logging.getLogger(__name__)
@@ -25,7 +26,8 @@ ingestion_lock = threading.RLock()
 
 
 def reingest_project(project_id: int, trigger: str = "manual", auto_status: bool | None = None) -> dict:
-    """Re-scan a project's docs folder and pull new commits from its repo.
+    """Re-scan a project's docs folder, pull new commits from its repo, and
+    sync its connector sources (Slack, Linear, Jira, Notion).
 
     If anything new was ingested and an API key is configured, the project's
     structured status is regenerated too (disable with auto_status=False or
@@ -43,6 +45,7 @@ def reingest_project(project_id: int, trigger: str = "manual", auto_status: bool
             "run_id": run_id,
             "docs": None,
             "git": None,
+            "sources": [],
             "errors": [],
             "status_regenerated": False,
         }
@@ -59,22 +62,32 @@ def reingest_project(project_id: int, trigger: str = "manual", auto_status: bool
                 report["errors"].extend(report["git"]["errors"])
             except Exception as e:
                 report["errors"].append(f"git: {e}")
-        if not project["docs_path"] and not project["repo_path"]:
-            report["errors"].append("Project has no docs_path or repo_path configured")
+        sources = db.list_sources(project_id)
+        for source in sources:
+            try:
+                source_report = ingest_source(source)
+                report["sources"].append(source_report)
+                report["errors"].extend(f"{source['kind']} '{source['name']}': {e}" for e in source_report["errors"])
+            except Exception as e:
+                report["errors"].append(f"{source['kind']} '{source['name']}': {e}")
+        if not project["docs_path"] and not project["repo_path"] and not sources:
+            report["errors"].append("Project has no docs_path, repo_path or sources configured")
 
         docs_ingested = len(report["docs"]["ingested"]) if report["docs"] else 0
         docs_removed = len(report["docs"]["removed"]) if report["docs"] else 0
         commits_ingested = len(report["git"]["ingested"]) if report["git"] else 0
-        report["changed"] = bool(docs_ingested or docs_removed or commits_ingested)
+        items_ingested = sum(len(s["ingested"]) for s in report["sources"])
+        report["changed"] = bool(docs_ingested or docs_removed or commits_ingested or items_ingested)
 
-        # A run "fails" only if no source could be read at all.
-        ok = report["docs"] is not None or report["git"] is not None
+        # A run "fails" only if nothing at all could be read.
+        ok = report["docs"] is not None or report["git"] is not None or bool(report["sources"])
         db.finish_ingestion_run(
             run_id,
             "ok" if ok else "error",
             docs_ingested=docs_ingested,
             docs_removed=docs_removed,
             commits_ingested=commits_ingested,
+            items_ingested=items_ingested,
             errors=report["errors"],
         )
 

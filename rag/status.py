@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from app.config import STATUS_MAX_COMMITS, STATUS_MAX_DOC_CHARS
+from app.config import STATUS_MAX_COMMITS, STATUS_MAX_DOC_CHARS, STATUS_MAX_ITEMS
 from db import database as db
 from rag import llm
 from rag.vector_store import get_chunks
@@ -43,8 +43,9 @@ STATUS_SCHEMA = {
 STATUS_SECTIONS = ("done", "in_progress", "next_steps", "blockers")
 
 SYSTEM_PROMPT = """You maintain the status report for a software project. You are given \
-the project's most recent git commits (newest first) and its documentation. Produce a \
-structured status that a teammate could read before a standup.
+the project's most recent git commits (newest first), its documentation, and possibly \
+recent issues, chat messages and pages from tools like Linear, Jira, Slack and Notion. \
+Produce a structured status that a teammate could read before a standup.
 
 How to fill each field:
 - summary: two or three sentences on where the project stands right now.
@@ -55,8 +56,9 @@ blocker stops progress), or unknown (not enough information).
 - next_steps: work that is planned or explicitly pending and hasn't started.
 - blockers: things that stop progress, as stated in the material. Leave empty if none are stated.
 
-Use only the material provided. Every item needs at least one source: a doc path or a \
-commit short-hash exactly as labelled in the material. Keep items short (one line each), \
+Use only the material provided. Every item needs at least one source: a doc path, a \
+commit short-hash, or an issue/message/page reference, exactly as labelled in the material. \
+Issue trackers usually know best what is in progress or planned; chat often surfaces blockers. Keep items short (one line each), \
 merge duplicates, and prefer what the newest commits say when docs and commits disagree, \
 since docs are often updated less often than code."""
 
@@ -116,6 +118,25 @@ def _collect_context(project_id: int) -> tuple[str, list[str]]:
         source_refs.append(path)
     if doc_blocks:
         sections.append("## Documentation\n\n" + "\n\n".join(doc_blocks))
+
+    # Phase 4: items from connectors (issues, Slack days, Notion pages).
+    everything = get_chunks(project_id)
+    item_texts: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    item_meta: dict[tuple[str, str], dict] = {}
+    for text, meta in zip(everything.get("documents") or [], everything.get("metadatas") or []):
+        if meta.get("source_type") in ("doc", "commit"):
+            continue
+        key = (meta["source_type"], meta["source_ref"])
+        item_texts.setdefault(key, []).append((meta.get("chunk_index", 0), text))
+        item_meta[key] = meta
+    newest = sorted(item_meta, key=lambda k: item_meta[k].get("item_ts", 0), reverse=True)[:STATUS_MAX_ITEMS]
+    item_blocks = []
+    for key in newest:
+        body = "\n".join(t for _, t in sorted(item_texts[key]))
+        item_blocks.append(f"[{key[0]}:{key[1]}]\n{body}")
+        source_refs.append(key[1])
+    if item_blocks:
+        sections.append("## Issues, messages and pages (newest first)\n\n" + "\n\n".join(item_blocks))
 
     return "\n\n".join(sections), source_refs
 

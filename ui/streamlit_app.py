@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_BASE = os.getenv("STANDUP_API_URL", "http://localhost:8000")
+# With AUTH_ENABLED on the API, set a token from `python -m app.manage create-token <user>`.
+API_TOKEN = os.getenv("STANDUP_API_TOKEN", "")
+HEADERS = {"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {}
 ALL_PROJECTS = "(all projects)"
 HEALTH_BADGES = {
     "on_track": "\U0001F7E2 On track",
@@ -31,7 +34,7 @@ st.title("\U0001F4CB StandUp Bot")
 
 
 def api_get(path: str, quiet: bool = False):
-    r = requests.get(f"{API_BASE}{path}", timeout=60)
+    r = requests.get(f"{API_BASE}{path}", headers=HEADERS, timeout=60)
     if not r.ok:
         if not quiet:
             st.error(_detail(r))
@@ -40,7 +43,7 @@ def api_get(path: str, quiet: bool = False):
 
 
 def api_post(path: str, payload: dict | None = None, params: dict | None = None):
-    r = requests.post(f"{API_BASE}{path}", json=payload, params=params, timeout=600)
+    r = requests.post(f"{API_BASE}{path}", json=payload, params=params, headers=HEADERS, timeout=600)
     if not r.ok:
         st.error(_detail(r))
         return None
@@ -48,7 +51,7 @@ def api_post(path: str, payload: dict | None = None, params: dict | None = None)
 
 
 def api_delete(path: str):
-    r = requests.delete(f"{API_BASE}{path}", timeout=60)
+    r = requests.delete(f"{API_BASE}{path}", headers=HEADERS, timeout=60)
     if not r.ok:
         st.error(_detail(r))
         return None

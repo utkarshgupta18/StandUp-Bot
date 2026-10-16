@@ -1,0 +1,47 @@
+# Postgres + pgvector for metadata and embeddings, and the API serving the
+# React app at http://localhost:8000/app/.
+#
+#   cp .env.example .env          # set ANTHROPIC_API_KEY (and auth / connector settings)
+#   docker compose up --build
+#
+# Your docs folders and git repos must be visible inside the container: mount
+# them under /projects (PROJECTS_DIR, default ./sample_data) and register
+# projects with paths like /projects/docs and /projects/sample_repo.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: standup
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-standup}
+      POSTGRES_DB: standup
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U standup -d standup"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://standup:${POSTGRES_PASSWORD:-standup}@db:5432/standup
+      VECTOR_BACKEND: pgvector
+      DATA_DIR: /data
+    volumes:
+      - appdata:/data
+      - ${PROJECTS_DIR:-./sample_data}:/projects:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  appdata:

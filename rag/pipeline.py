@@ -10,8 +10,9 @@ from rag.vector_store import query_across_projects
 
 SYSTEM_PROMPT = """You are a project-tracking assistant. You answer questions about \
 the state of one or more software projects using only the provided context, which comes \
-from project documentation, git commit history, and (when available) a structured status \
-summary generated earlier from that same material.
+from project documentation, git commit history, connected tools (Slack, Linear, Jira, \
+Notion), and (when available) a structured status summary generated earlier from that \
+same material.
 
 Rules:
 - Answer only from the given context. If the context doesn't contain the answer, say so plainly.
@@ -25,8 +26,8 @@ cover every project that's relevant to the question.
 - At the end, list the sources you drew from (doc paths and/or commit short-hashes)."""
 
 
-def _project_names() -> dict[int, str]:
-    return {row["id"]: row["name"] for row in db.list_projects()}
+def _project_names(project_ids: list[int] | None = None) -> dict[int, str]:
+    return {row["id"]: row["name"] for row in db.list_projects(project_ids)}
 
 
 def _format_context(results: dict, names: dict[int, str]) -> tuple[str, list[dict]]:
@@ -43,12 +44,17 @@ def _format_context(results: dict, names: dict[int, str]) -> tuple[str, list[dic
         shown_ref = source_ref[:10] if source_type == "commit" else source_ref
         label = f"[{i+1}] project={project_name} {source_type}:{shown_ref}"
         blocks.append(f"{label}\n{doc}")
-        sources.append({
+        source = {
             "project_id": project_id,
             "project_name": project_name,
             "source_type": source_type,
             "source_ref": source_ref,
-        })
+        }
+        if meta.get("title"):
+            source["title"] = meta["title"]
+        if meta.get("url"):
+            source["url"] = meta["url"]
+        sources.append(source)
 
     return "\n\n---\n\n".join(blocks), sources
 
@@ -70,15 +76,21 @@ def _status_context(project_ids: list[int], names: dict[int, str]) -> tuple[str,
     return "\n\n".join(blocks), sources
 
 
-def answer_question(question: str, project_id: int | None = None, top_k: int = TOP_K) -> dict:
+def answer_question(
+    question: str,
+    project_id: int | None = None,
+    top_k: int = TOP_K,
+    allowed_project_ids: list[int] | None = None,
+) -> dict:
     """Retrieve context (optionally scoped to one project) and generate an answer.
 
     project_id=None runs the query across all projects, for questions like
     "which projects have pending work?". Cross-project retrieval gives every
     project a share of the results, and each project's latest structured
     status (Phase 3) is included so no project is silently left out.
+    allowed_project_ids limits "all projects" to what the caller may see (Phase 4 auth).
     """
-    names = _project_names()
+    names = _project_names(allowed_project_ids)
     if project_id is not None:
         project_ids = [project_id]
         results = vector_query(question, top_k=top_k, project_id=project_id)

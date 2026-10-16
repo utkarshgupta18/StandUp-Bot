@@ -1,0 +1,11 @@
+.git
+.venv
+data
+**/__pycache__
+.pytest_cache
+.env
+web/node_modules
+web/dist
+tests
+sample_data/sample_repo/.git
+sample_data/second_project/repo/.git

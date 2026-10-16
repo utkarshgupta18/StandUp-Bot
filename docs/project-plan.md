@@ -1,6 +1,6 @@
 ---
 title: RAG Project Tracker — Scope & Phased Plan
-last_updated: 2026-10-15
+last_updated: 2026-10-16
 ---
 
 # RAG Project Tracker — Scope & Phased Plan
@@ -16,11 +16,11 @@ A chatbot, backed by retrieval-augmented generation (RAG), that lets you query t
 - **Stack**: Python full stack.
   - Backend: FastAPI
   - RAG pipeline: direct `anthropic` SDK calls (no LangChain dependency needed so far), all routed through `rag/llm.py`
-  - Vector store: Chroma (local, file-based, no infra cost)
-  - Metadata store: SQLite (projects, documents, tasks, ingestion runs)
+  - Vector store: Chroma (local, file-based, no infra cost) by default; pgvector in Postgres optional (Phase 4)
+  - Metadata store: SQLite by default; Postgres optional via `DATABASE_URL` (Phase 4)
   - Embeddings: **sentence-transformers (`all-MiniLM-L6-v2`), local and free** — Anthropic's API has no embeddings endpoint, so Claude is used only for generation
-  - Frontend: Streamlit to start (fastest to build); can swap to React later if the UI needs grow
-  - Hosting: runs locally or on a small VPS — no paid infra required to start
+  - Frontend: React + TypeScript (Vite) web app served by the API (Phase 4); the original Streamlit UI is kept as a lightweight alternative
+  - Hosting: runs locally or on a small VPS — no paid infra required to start; Dockerfile + docker-compose (with Postgres/pgvector) for a shared instance
 
 ## Core data model (sketch)
 
@@ -60,19 +60,24 @@ Every chunk is tagged with `project_id` so retrieval can be scoped ("only answer
 - Dashboard: `GET /dashboard` plus a Streamlit Dashboard tab (per project: doc/commit counts, last commit, last refresh and its errors, health badge, summary, and the four status columns).
 - Covered by `tests/test_status.py` (Claude stubbed out).
 
-### Phase 4 — Polish & scale (as needed)
-- Swap Streamlit for a React/Next.js frontend if you want a nicer UI or plan to share this with others.
-- Move SQLite → Postgres and Chroma → pgvector or a hosted vector DB if data volume or concurrent use grows.
-- Add auth if this ever needs to be accessible beyond your own machine.
-- Add more source connectors (Slack, Linear/Jira, Notion) if "project updates" should pull from more than docs + git.
+### Phase 4 — Polish & scale ✅ DONE
+- **React frontend** (`web/`, Vite + React + TypeScript): chat with per-project or all-projects scope and linked sources, dashboard (health, summary, done / in progress / next / blockers, refresh and regenerate), project and source management with run history, user management, and login when auth is on. It's served by the API at `/app/`, works at phone width and in dark mode, and was checked end to end in Chromium. Streamlit stays as an alternative and supports a bearer token.
+- **Postgres + pgvector**: `DATABASE_URL` switches metadata to Postgres, and `VECTOR_BACKEND=pgvector` stores embeddings in a `chunks` table with an HNSW cosine index. Both backends sit behind the same functions, and the full test suite runs against SQLite + Chroma and Postgres + pgvector (`STANDUP_TEST_DATABASE_URL`). Older SQLite databases are migrated in place: the `documents.source_type` CHECK is dropped and new columns are added. `docker-compose.yml` runs Postgres + pgvector and the API.
+- **Auth** (`app/auth.py`, off by default): username/password login, PBKDF2 password hashes, and HMAC-signed expiring bearer tokens. There are two roles: admin (everything) and viewer (read and chat). Viewers only see the projects granted to them, including in "all projects" questions, and other projects return 404. Users are managed from the web app or `python -m app.manage`, and the first admin can be bootstrapped from env.
+- **Connectors** (`connectors/`): Slack (channel history and threads, one document per day), Linear (GraphQL issues per team), Jira Cloud (JQL search, rich-text descriptions flattened), and Notion (pages and databases with properties and blocks). Sources are configured per project, credentials come from env, and sources sync with every refresh, with hash-based skipping. Their items feed the status prompt ("issues, messages and pages, newest first") and chat answers, with links back. A failing source is reported, and the rest of the refresh still runs.
+- Covered by `tests/test_connectors.py` (HTTP faked with payloads shaped like each API), `tests/test_auth.py`, and `tests/test_storage.py`.
 
 ## Open questions to revisit later
 - ~~How often should re-ingestion run (on-demand vs. scheduled)?~~ Both are supported; the interval is configurable (`REINGEST_INTERVAL_MINUTES`), off by default.
 - Should code itself (not just commits) be embedded for deeper "what changed and why" answers, or is commit history + docs enough?
-- Any projects with private/sensitive repos that need access-control thought before Phase 2?
+- ~~Any projects with private/sensitive repos that need access-control thought?~~ Per-project access for viewers (Phase 4 auth).
+- Push instead of poll: Slack/Linear/Jira webhooks could trigger a source sync right away instead of waiting for the scheduler.
+- SSO (OIDC) instead of local passwords if this is shared across an organisation.
 
 ## Implementation notes
 - `EMBEDDING_BACKEND=hashing` is an offline fallback embedder used only for testing in network-restricted environments — leave it unset for real use so it defaults to `sentence-transformers`.
 - Git ingestion embeds commit message + changed-files + stats, not full diffs, to keep chunk volume sane on real repos.
 - The Anthropic SDK was upgraded from 0.34.2 to 1.15.0: 0.34 can't construct a client against current `httpx` releases, and the status generator needs structured outputs. Default model is `claude-opus-5-5` (`CLAUDE_MODEL`, `CLAUDE_EFFORT` in `.env`).
 - Run `pytest` for the full offline suite; `smoke_test.py` still checks ingestion + retrieval on the demo data.
+- Connector credentials are only ever read from the environment; the `sources` table holds non-secret settings (channel ids, team keys, JQL, page ids), so a database dump doesn't leak tokens.
+- Switching storage backends doesn't migrate data between them; refresh projects after switching to re-ingest.
