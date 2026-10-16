@@ -429,3 +429,39 @@ def user_project_ids(user_id: int) -> list[int]:
     with get_conn() as conn:
         rows = conn.execute("SELECT project_id FROM project_access WHERE user_id = ? ORDER BY project_id", (user_id,)).fetchall()
     return [r["project_id"] for r in rows]
+
+
+# ---------------------------------------------------------- login failures
+def add_login_failures(keys: list[str], failed_at: float) -> None:
+    with get_conn() as conn:
+        for key in keys:
+            conn.execute("INSERT INTO login_failures (key, failed_at) VALUES (?, ?)", (key, failed_at))
+
+
+def recent_login_failures(key: str, since: float, limit: int) -> list[float]:
+    """Timestamps of a key's failures after `since`, newest first, at most `limit`."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT failed_at FROM login_failures WHERE key = ? AND failed_at > ? ORDER BY failed_at DESC LIMIT ?",
+            (key, since, limit),
+        ).fetchall()
+    return [float(r["failed_at"]) for r in rows]
+
+
+def clear_login_failures(key: Optional[str] = None) -> None:
+    """Forget one key's failures, or every key's when key is None."""
+    with get_conn() as conn:
+        if key is None:
+            conn.execute("DELETE FROM login_failures")
+        else:
+            conn.execute("DELETE FROM login_failures WHERE key = ?", (key,))
+
+
+def prune_login_failures(before: float) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM login_failures WHERE failed_at <= ?", (before,))
+
+
+def count_login_failures() -> int:
+    with get_conn() as conn:
+        return conn.execute("SELECT COUNT(*) AS n FROM login_failures").fetchone()["n"]

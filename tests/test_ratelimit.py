@@ -1,15 +1,15 @@
-"""Login rate limiting: per-IP and per-username caps on failed sign-ins."""
+"""Login rate limiting: per-IP and per-username caps on failed sign-ins, stored in the database."""
 import pytest
 
 from app import auth
 from app import config as cfg
-from app.ratelimit import LoginRateLimiter, login_limiter
+from app.ratelimit import LoginRateLimiter
 from db import database as db
 
 
 class Clock:
     def __init__(self):
-        self.now = 1000.0
+        self.now = 1_800_000_000.0  # wall-clock seconds, like time.time()
 
     def __call__(self):
         return self.now
@@ -30,11 +30,11 @@ def test_user_limit_blocks_until_failures_age_out(limits):
         assert rl.retry_after("1.1.1.1", "alice") == 0
         rl.record_failure("1.1.1.1", "alice")
         clock.now += 60
-    # Failures at t=1000, 1060, 1120; now t=1180. Oldest leaves the window at 1900.
+    # Failures at t0, t0+60, t0+120; now t0+180. The oldest leaves the window at t0+900.
     assert rl.retry_after("1.1.1.1", "alice") == 720
     assert rl.retry_after("2.2.2.2", "ALICE ") == 720   # username key is normalised, any IP
     assert rl.retry_after("1.1.1.1", "bob") == 0        # IP still under its own limit
-    clock.now = 1900
+    clock.now += 720
     assert rl.retry_after("1.1.1.1", "alice") == 0      # one failure aged out
 
 
@@ -66,13 +66,26 @@ def test_zero_disables_a_limit(limits, monkeypatch):
     assert rl.retry_after("1.1.1.1", "alice") == 0
 
 
-def test_expired_keys_are_dropped(limits):
+def test_old_failures_are_pruned_from_the_database(limits):
     clock = Clock()
     rl = LoginRateLimiter(clock)
     rl.record_failure("1.1.1.1", "alice")
+    assert db.count_login_failures() == 2  # one row each for the IP and the username keys
     clock.now += 901
-    rl.retry_after("1.1.1.1", "alice")
-    assert rl._failures == {}
+    rl.record_failure("2.2.2.2", "bob")  # recording a new failure prunes expired rows
+    assert db.count_login_failures() == 2
+
+
+def test_counts_are_shared_across_processes_and_restarts(limits):
+    clock = Clock()
+    worker_a, worker_b = LoginRateLimiter(clock), LoginRateLimiter(clock)
+    worker_a.record_failure("1.1.1.1", "alice")
+    worker_b.record_failure("2.2.2.2", "alice")
+    worker_a.record_failure("3.3.3.3", "alice")
+    after_restart = LoginRateLimiter(clock)
+    assert after_restart.retry_after("4.4.4.4", "alice") > 0
+    worker_b.record_success("4.4.4.4", "alice")
+    assert worker_a.retry_after("4.4.4.4", "alice") == 0
 
 
 # -------------------------------------------------------------- API level
@@ -121,4 +134,4 @@ def test_unknown_usernames_count_against_the_ip(client, auth_on):
 
 def test_limiter_is_not_used_when_auth_disabled(client):
     assert _login(client, "alice", "x").status_code == 400
-    assert login_limiter._failures == {}
+    assert db.count_login_failures() == 0

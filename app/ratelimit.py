@@ -14,75 +14,70 @@ A successful login clears that username's failures but not the IP's;
 otherwise an attacker with one valid account could reset their IP counter
 between guesses at other accounts.
 
-Counters live in process memory: they reset on restart, and each API process
-(e.g. several uvicorn workers or replicas) keeps its own. Behind a reverse
-proxy, run uvicorn with --proxy-headers --forwarded-allow-ips=<proxy ip> so the
-real client IP is used instead of the proxy's.
+Failures are stored in the `login_failures` table of the configured database
+(SQLite or Postgres), so every API process or replica shares the same counts
+and they survive restarts. Rows older than the window are pruned whenever a
+new failure is recorded. The check and the record aren't one transaction, so
+concurrent attempts can overshoot a limit by a few; that's fine for slowing
+down guessing.
+
+Behind a reverse proxy, run uvicorn with --proxy-headers
+--forwarded-allow-ips=<proxy ip> so the real client IP is used instead of the
+proxy's.
 """
 from __future__ import annotations
 
 import math
-import threading
 import time
-from collections import defaultdict, deque
 from typing import Callable
 
 from app import config as cfg
+from db import database as db
 
 
 class LoginRateLimiter:
-    def __init__(self, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, clock: Callable[[], float] = time.time):
+        # Wall-clock time: timestamps are compared across processes and restarts.
         self._clock = clock
-        self._failures: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = threading.Lock()
 
     @staticmethod
-    def _keys(ip: str, username: str) -> list[tuple[str, int]]:
+    def _user_key(username: str) -> str:
+        return f"user:{username.strip().lower()}"
+
+    @classmethod
+    def _keys(cls, ip: str, username: str) -> list[tuple[str, int]]:
         """(counter key, limit) pairs that apply to this attempt; limit 0 = off."""
         return [
             (f"ip:{ip}", cfg.LOGIN_MAX_FAILURES_PER_IP),
-            (f"user:{username.strip().lower()}", cfg.LOGIN_MAX_FAILURES_PER_USER),
+            (cls._user_key(username), cfg.LOGIN_MAX_FAILURES_PER_USER),
         ]
-
-    def _prune(self, key: str, now: float) -> deque[float]:
-        window = cfg.LOGIN_RATE_LIMIT_WINDOW_SECONDS
-        failures = self._failures[key]
-        while failures and failures[0] <= now - window:
-            failures.popleft()
-        if not failures:
-            del self._failures[key]  # keep memory bounded to recently failing keys
-            return deque()
-        return failures
 
     def retry_after(self, ip: str, username: str) -> int:
         """Seconds until another attempt is allowed; 0 means allowed now."""
         now = self._clock()
+        window = cfg.LOGIN_RATE_LIMIT_WINDOW_SECONDS
         wait = 0.0
-        with self._lock:
-            for key, limit in self._keys(ip, username):
-                if limit <= 0:
-                    continue
-                failures = self._prune(key, now)
-                if len(failures) >= limit:
-                    # Allowed again once enough old failures age out of the window.
-                    oldest_relevant = failures[len(failures) - limit]
-                    wait = max(wait, oldest_relevant + cfg.LOGIN_RATE_LIMIT_WINDOW_SECONDS - now)
+        for key, limit in self._keys(ip, username):
+            if limit <= 0:
+                continue
+            newest = db.recent_login_failures(key, since=now - window, limit=limit)
+            if len(newest) >= limit:
+                # Allowed again once the limit-th newest failure ages out of the window.
+                wait = max(wait, newest[-1] + window - now)
         return math.ceil(wait) if wait > 0 else 0
 
     def record_failure(self, ip: str, username: str) -> None:
         now = self._clock()
-        with self._lock:
-            for key, limit in self._keys(ip, username):
-                if limit > 0:
-                    self._failures[key].append(now)
+        keys = [key for key, limit in self._keys(ip, username) if limit > 0]
+        if keys:
+            db.add_login_failures(keys, now)
+        db.prune_login_failures(before=now - cfg.LOGIN_RATE_LIMIT_WINDOW_SECONDS)
 
     def record_success(self, ip: str, username: str) -> None:
-        with self._lock:
-            self._failures.pop(f"user:{username.strip().lower()}", None)
+        db.clear_login_failures(self._user_key(username))
 
     def reset(self) -> None:
-        with self._lock:
-            self._failures.clear()
+        db.clear_login_failures()
 
 
 login_limiter = LoginRateLimiter()

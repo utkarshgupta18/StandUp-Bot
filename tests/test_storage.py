@@ -45,6 +45,8 @@ def test_legacy_sqlite_database_is_migrated(tmp_path, monkeypatch):
     run = db.start_ingestion_run(project["id"])
     db.finish_ingestion_run(run, "ok", items_ingested=3)
     assert db.latest_ingestion_run(project["id"])["items_ingested"] == 3
+    db.add_login_failures(["ip:1.2.3.4"], 1_800_000_000.5)  # login_failures table added too
+    assert db.recent_login_failures("ip:1.2.3.4", since=0, limit=5) == [1_800_000_000.5]
     db.add_update(project["id"], "s", [], {"health": "unknown"})
     assert db.update_to_dict(db.latest_update(project["id"]))["status"] == {"health": "unknown"}
 

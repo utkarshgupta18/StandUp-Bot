@@ -174,8 +174,10 @@ failures. Tune or disable the caps with `LOGIN_RATE_LIMIT_WINDOW_SECONDS`,
 `LOGIN_MAX_FAILURES_PER_IP` and `LOGIN_MAX_FAILURES_PER_USER` (`0` turns a cap
 off). Things to know:
 
-- Counters are kept in memory per API process. They reset on restart, and
-  several workers or replicas each count separately.
+- Failures are stored in the database (a `login_failures` table in SQLite or
+  Postgres), so several workers or replicas share one count and it survives
+  restarts. Rows older than the window are deleted as new failures come in.
+  Simultaneous attempts can go a few past a cap before they're counted.
 - The per-username cap means someone who knows a username can keep that
   account locked out by failing on purpose. If that matters more to you than
   password guessing, set `LOGIN_MAX_FAILURES_PER_USER=0` and rely on the

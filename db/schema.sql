@@ -84,7 +84,19 @@ CREATE TABLE IF NOT EXISTS project_access (
     PRIMARY KEY (user_id, project_id)
 );
 
+-- Failed sign-in attempts for login rate limiting (app/ratelimit.py). One row
+-- per failure per counter key ("ip:<addr>" or "user:<name>"); failed_at is
+-- Unix time in seconds. Stored here so every API process shares the counts
+-- and they survive restarts. Rows older than the window are pruned.
+CREATE TABLE IF NOT EXISTS login_failures (
+    id          {pk},
+    key         TEXT NOT NULL,
+    failed_at   DOUBLE PRECISION NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id);
 CREATE INDEX IF NOT EXISTS idx_updates_project ON updates(project_id);
 CREATE INDEX IF NOT EXISTS idx_runs_project ON ingestion_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_sources_project ON sources(project_id);
+CREATE INDEX IF NOT EXISTS idx_login_failures_key ON login_failures(key, failed_at);
+CREATE INDEX IF NOT EXISTS idx_login_failures_time ON login_failures(failed_at);
